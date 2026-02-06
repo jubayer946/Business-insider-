@@ -30,4 +30,4 @@ export interface AppState {
   ads: AdSpend[];
 }
 
-export type View = 'dashboard' | 'inventory' | 'sales' | 'ads' | 'ai';
+export type View = 'dashboard' | 'inventory' | 'sales' | 'ads';

@@ -5,7 +5,6 @@ import {
   Package, 
   ShoppingCart, 
   Megaphone, 
-  Sparkles, 
   TrendingUp, 
   AlertCircle, 
   Plus, 
@@ -17,26 +16,9 @@ import {
   X, 
   Loader2,
   CloudCheck,
-  Download,
-  Award,
   ArrowUpRight,
-  PieChart as PieChartIcon,
-  RefreshCcw,
   Zap
 } from 'lucide-react';
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  Legend
-} from 'recharts';
 import { 
   ref, 
   push, 
@@ -47,9 +29,6 @@ import {
 } from "firebase/database";
 import { db } from './services/firebase';
 import { Product, Sale, AdSpend, View } from './types';
-import { getAIInsights } from './services/geminiService';
-
-const COLORS = ['#2563eb', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6'];
 
 const App: React.FC = () => {
   const [view, setView] = useState<View>('dashboard');
@@ -65,10 +44,6 @@ const App: React.FC = () => {
   
   // Feedback States
   const [toasts, setToasts] = useState<{id: string, msg: string, type: 'success' | 'error'}[]>([]);
-
-  // AI States
-  const [aiInsight, setAiInsight] = useState<string | null>(null);
-  const [isAiLoading, setIsAiLoading] = useState(false);
 
   const addToast = (msg: string, type: 'success' | 'error' = 'success') => {
     const id = Math.random().toString(36).substr(2, 9);
@@ -205,13 +180,6 @@ const App: React.FC = () => {
     };
   }, [sales, products, ads]);
 
-  const fetchAI = async () => {
-    setIsAiLoading(true);
-    const result = await getAIInsights({ products, sales, ads });
-    setAiInsight(result);
-    setIsAiLoading(false);
-  };
-
   if (isLoading && products.length === 0) {
     return (
       <div className="h-screen w-full flex flex-col items-center justify-center bg-white">
@@ -278,11 +246,10 @@ const App: React.FC = () => {
         </header>
 
         <div className="p-6 md:p-10 max-w-7xl mx-auto w-full">
-          {view === 'dashboard' && <DashboardView metrics={metrics} sales={sales} ads={ads} products={products} />}
+          {view === 'dashboard' && <DashboardView metrics={metrics} />}
           {view === 'inventory' && <InventoryView products={products} onAdd={handleAddProduct} onDelete={handleDeleteProduct} onUpdateStock={handleUpdateStock} />}
           {view === 'sales' && <SalesView sales={sales} onAdd={handleAddSale} products={products} />}
           {view === 'ads' && <AdsView ads={ads} onAdd={handleAddAdSpend} />}
-          {view === 'ai' && <AIView insight={aiInsight} isLoading={isAiLoading} onFetch={fetchAI} />}
         </div>
       </main>
 
@@ -304,27 +271,7 @@ const App: React.FC = () => {
 };
 
 // --- Dashboard View Components ---
-const DashboardView = ({ metrics, sales, ads, products }: any) => {
-  const chartData = useMemo(() => {
-    const dates = Array.from({ length: 7 }, (_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      return d.toISOString().split('T')[0];
-    }).reverse();
-    return dates.map(date => {
-      const daySales = sales.filter((s: any) => s.date === date);
-      const rev = daySales.reduce((sum: number, s: any) => sum + s.revenue, 0);
-      const spend = ads.filter((a: any) => a.date === date).reduce((sum: number, a: any) => sum + a.amount, 0);
-      return { date: date.split('-').slice(1).join('/'), revenue: rev, ads: spend };
-    });
-  }, [sales, ads]);
-
-  const costBreakdown = [
-    { name: 'COGS', value: metrics.totalCostOfGoods },
-    { name: 'Ad Spend', value: metrics.totalAdSpend },
-    { name: 'Net Profit', value: Math.max(0, metrics.netProfit) }
-  ];
-
+const DashboardView = ({ metrics }: any) => {
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -334,51 +281,38 @@ const DashboardView = ({ metrics, sales, ads, products }: any) => {
         <MetricCard label="ROAS" value={`${metrics.roas.toFixed(2)}x`} icon={<ArrowUpRight/>} color="indigo" />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
-          <div className="flex justify-between items-center mb-8">
-            <h4 className="font-black text-slate-900 text-xs uppercase tracking-widest flex items-center gap-2">
-              <TrendingUp size={14} className="text-blue-600"/> Growth Trajectory
-            </h4>
-            <div className="flex gap-4">
-              <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase">
-                <div className="w-2 h-2 rounded-full bg-blue-600"/> Revenue
-              </div>
-              <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase">
-                <div className="w-2 h-2 rounded-full bg-red-400"/> Ad Cost
-              </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
+          <h4 className="font-black text-slate-900 text-xs uppercase tracking-widest mb-4 flex items-center gap-2 text-blue-600">
+            Performance Summary
+          </h4>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center py-2 border-b border-slate-50">
+              <span className="text-xs font-bold text-slate-400 uppercase">Cost of Goods</span>
+              <span className="text-sm font-black text-slate-900">${metrics.totalCostOfGoods.toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-50">
+              <span className="text-xs font-bold text-slate-400 uppercase">Marketing Burn</span>
+              <span className="text-sm font-black text-slate-900">${metrics.totalAdSpend.toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-50">
+              <span className="text-xs font-bold text-slate-400 uppercase">Gross Profit Margin</span>
+              <span className="text-sm font-black text-emerald-600">{metrics.margin.toFixed(1)}%</span>
             </div>
           </div>
-          <div className="h-72 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 700 }} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 700 }} />
-                <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 30px rgba(0,0,0,0.05)' }} />
-                <Bar dataKey="revenue" fill="#2563eb" radius={[4, 4, 0, 0]} barSize={24} />
-                <Bar dataKey="ads" fill="#f87171" radius={[4, 4, 0, 0]} barSize={24} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
         </div>
-
-        <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm flex flex-col">
-          <h4 className="font-black text-slate-900 text-xs uppercase tracking-widest mb-8 flex items-center gap-2">
-            <PieChartIcon size={14} className="text-indigo-600"/> Cost Distribution
+        
+        <div className="bg-slate-900 p-8 rounded-[2rem] shadow-xl text-white">
+          <h4 className="font-black text-blue-400 text-xs uppercase tracking-widest mb-4">
+            Quick Analysis
           </h4>
-          <div className="flex-1 h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={costBreakdown} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                  {costBreakdown.map((_, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="none" />
-                  ))}
-                </Pie>
-                <Tooltip />
-                <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: '10px', fontWeight: 'bold', textTransform: 'uppercase' }} />
-              </PieChart>
-            </ResponsiveContainer>
+          <p className="text-slate-400 text-sm leading-relaxed">
+            Your current net profitability is <span className="text-white font-bold">${metrics.netProfit.toLocaleString()}</span>. 
+            Keep a close eye on your ROAS of <span className="text-white font-bold">{metrics.roas.toFixed(2)}x</span> to ensure your marketing spend remains efficient relative to the cost of acquisition.
+          </p>
+          <div className="mt-6 flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">System Monitoring Active</span>
           </div>
         </div>
       </div>
@@ -637,51 +571,11 @@ const AdsView = ({ ads, onAdd }: any) => {
   );
 };
 
-// --- AI View ---
-const AIView = ({ insight, isLoading, onFetch }: any) => (
-  <div className="max-w-3xl mx-auto py-8 text-center animate-in fade-in duration-700">
-    {!insight && !isLoading ? (
-      <div className="py-12 px-6">
-        <div className="w-24 h-24 bg-gradient-to-br from-blue-600 to-indigo-700 text-white rounded-[2.5rem] flex items-center justify-center mx-auto shadow-2xl mb-8 group hover:scale-110 transition-all cursor-pointer" onClick={onFetch}>
-          <Sparkles size={40} className="group-hover:rotate-12 transition-all"/>
-        </div>
-        <h2 className="text-4xl font-black tracking-tight text-slate-900 mb-4">Strategic Intelligence</h2>
-        <p className="text-slate-500 text-lg mb-10 max-w-lg mx-auto font-medium">Connect inventory turnover, marketing burn, and sales margins into an AI-powered growth blueprint.</p>
-        <button onClick={onFetch} className="w-full bg-slate-900 text-white py-8 rounded-[2rem] font-black text-[10px] uppercase tracking-[0.4em] hover:shadow-2xl transition-all active:scale-[0.98]">Synthesize Performance Data</button>
-      </div>
-    ) : isLoading ? (
-      <div className="flex flex-col items-center gap-8 py-32">
-        <div className="relative">
-          <div className="absolute inset-0 bg-blue-100 rounded-full blur-2xl animate-pulse"/>
-          <Loader2 className="w-16 h-16 text-blue-600 animate-spin relative" />
-        </div>
-        <p className="text-xs font-black uppercase tracking-[0.5em] text-blue-600 animate-pulse">Running Diagnostic Core...</p>
-      </div>
-    ) : (
-      <div className="bg-white rounded-[3rem] border border-slate-100 shadow-2xl overflow-hidden text-left animate-in zoom-in-95 duration-700">
-        <div className="bg-slate-900 p-8 text-white flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <Sparkles size={18} className="text-blue-400" />
-            <h3 className="font-black text-[10px] uppercase tracking-[0.2em]">Enterprise Growth Blueprint</h3>
-          </div>
-          <button onClick={onFetch} className="flex items-center gap-2 text-[9px] font-black uppercase bg-white/10 px-4 py-2 rounded-xl border border-white/5 hover:bg-white/20 transition-all">
-            <RefreshCcw size={12}/> Regenerate
-          </button>
-        </div>
-        <div className="p-10 md:p-14 whitespace-pre-wrap text-slate-700 text-sm md:text-base leading-relaxed max-h-[70vh] overflow-auto prose prose-slate">
-          {insight}
-        </div>
-      </div>
-    )}
-  </div>
-);
-
 const navItems = [
   { id: 'dashboard', icon: <LayoutDashboard />, label: 'Stats' },
   { id: 'inventory', icon: <Package />, label: 'Stock' },
   { id: 'sales', icon: <ShoppingCart />, label: 'Sales' },
   { id: 'ads', icon: <Megaphone />, label: 'Ads' },
-  { id: 'ai', icon: <Sparkles />, label: 'Consultant' },
 ];
 
 export default App;
