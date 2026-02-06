@@ -5,16 +5,20 @@ import {
   Package, 
   ShoppingCart, 
   Megaphone, 
-  Sparkles,
-  TrendingUp,
-  AlertCircle,
-  Plus,
-  Trash2,
-  DollarSign,
-  BarChart3,
-  Menu,
-  X,
-  Loader2
+  Sparkles, 
+  TrendingUp, 
+  AlertCircle, 
+  Plus, 
+  Trash2, 
+  DollarSign, 
+  BarChart3, 
+  Menu, 
+  X, 
+  Loader2,
+  CloudCheck,
+  CloudOff,
+  CloudLightning,
+  RefreshCw
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -23,18 +27,16 @@ import {
   YAxis, 
   CartesianGrid, 
   Tooltip, 
-  ResponsiveContainer
+  ResponsiveContainer 
 } from 'recharts';
 import { 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  deleteDoc, 
-  doc, 
-  updateDoc,
-  query,
-  orderBy
-} from "firebase/firestore";
+  ref, 
+  push, 
+  onValue, 
+  remove, 
+  update, 
+  set 
+} from "firebase/database";
 import { db } from './services/firebase';
 import { Product, Sale, AdSpend, View } from './types';
 import { getAIInsights } from './services/geminiService';
@@ -44,6 +46,8 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   
   // Data States
   const [products, setProducts] = useState<Product[]>([]);
@@ -54,85 +58,112 @@ const App: React.FC = () => {
   const [aiInsight, setAiInsight] = useState<string | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
 
-  // 1. Setup REALTIME Listeners
+  // 1. Initial Load from LocalStorage (Instant UX)
   useEffect(() => {
-    // Listen for Products
-    const unsubProducts = onSnapshot(collection(db, "products"), (snapshot) => {
-      setProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-      // Once we have a snapshot (even if empty), we know it's "loaded"
-      checkLoadingStatus();
+    const localProds = localStorage.getItem('biz_products_v2');
+    const localSales = localStorage.getItem('biz_sales_v2');
+    const localAds = localStorage.getItem('biz_ads_v2');
+    
+    if (localProds) setProducts(JSON.parse(localProds));
+    if (localSales) setSales(JSON.parse(localSales));
+    if (localAds) setAds(JSON.parse(localAds));
+  }, []);
+
+  // 2. Realtime Database Subscription
+  useEffect(() => {
+    const prodsRef = ref(db, 'products');
+    const salesRef = ref(db, 'sales');
+    const adsRef = ref(db, 'ads');
+
+    const unsubscribeProds = onValue(prodsRef, (snapshot) => {
+      const data = snapshot.val();
+      const list = data ? Object.keys(data).map(key => ({ id: key, ...data[key] })) : [];
+      setProducts(list);
+      localStorage.setItem('biz_products_v2', JSON.stringify(list));
+      setIsLoading(false);
+    }, (error) => setSyncError(error.message));
+
+    const unsubscribeSales = onValue(salesRef, (snapshot) => {
+      const data = snapshot.val();
+      const list = data ? Object.keys(data).map(key => ({ id: key, ...data[key] })) : [];
+      // Sort by date descending
+      list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setSales(list);
+      localStorage.setItem('biz_sales_v2', JSON.stringify(list));
     });
 
-    // Listen for Sales (Ordered by date)
-    const salesQuery = query(collection(db, "sales"), orderBy("date", "desc"));
-    const unsubSales = onSnapshot(salesQuery, (snapshot) => {
-      setSales(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale)));
-      checkLoadingStatus();
+    const unsubscribeAds = onValue(adsRef, (snapshot) => {
+      const data = snapshot.val();
+      const list = data ? Object.keys(data).map(key => ({ id: key, ...data[key] })) : [];
+      list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setAds(list);
+      localStorage.setItem('biz_ads_v2', JSON.stringify(list));
     });
-
-    // Listen for Ads (Ordered by date)
-    const adsQuery = query(collection(db, "ads"), orderBy("date", "desc"));
-    const unsubAds = onSnapshot(adsQuery, (snapshot) => {
-      setAds(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AdSpend)));
-      checkLoadingStatus();
-    });
-
-    let loadedCollections = 0;
-    function checkLoadingStatus() {
-      loadedCollections++;
-      if (loadedCollections >= 3) {
-        setIsLoading(false);
-      }
-    }
 
     const handleResize = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener('resize', handleResize);
 
-    // Cleanup listeners on unmount
     return () => {
-      unsubProducts();
-      unsubSales();
-      unsubAds();
       window.removeEventListener('resize', handleResize);
     };
   }, []);
 
-  // Handlers for Persistence
+  // --- Persistence Handlers ---
+
   const handleAddProduct = async (p: Omit<Product, 'id'>) => {
+    setIsSyncing(true);
     try {
-      await addDoc(collection(db, "products"), p);
-    } catch (e) {
-      console.error("Error adding product: ", e);
+      const newRef = push(ref(db, 'products'));
+      await set(newRef, p);
+    } catch (e: any) {
+      alert("Cloud save failed. Check your Database Rules! " + e.message);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
   const handleDeleteProduct = async (id: string) => {
+    if (!confirm("Delete product?")) return;
+    setIsSyncing(true);
     try {
-      await deleteDoc(doc(db, "products", id));
-    } catch (e) {
-      console.error("Error deleting product: ", e);
+      await remove(ref(db, `products/${id}`));
+    } catch (e: any) {
+      alert("Delete failed: " + e.message);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
   const handleAddSale = async (s: Omit<Sale, 'id'>) => {
+    setIsSyncing(true);
     try {
-      await addDoc(collection(db, "sales"), s);
-      // Update Stock
       const product = products.find(p => p.id === s.productId);
-      if (product) {
-        const newStock = product.stock - s.quantity;
-        await updateDoc(doc(db, "products", s.productId), { stock: newStock });
-      }
-    } catch (e) {
-      console.error("Error recording sale: ", e);
+      if (!product) throw new Error("Product not found");
+
+      // Push Sale
+      const saleRef = push(ref(db, 'sales'));
+      await set(saleRef, s);
+
+      // Update Stock
+      await update(ref(db, `products/${s.productId}`), {
+        stock: product.stock - s.quantity
+      });
+    } catch (e: any) {
+      alert("Sale failed: " + e.message);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
   const handleAddAdSpend = async (a: Omit<AdSpend, 'id'>) => {
+    setIsSyncing(true);
     try {
-      await addDoc(collection(db, "ads"), a);
-    } catch (e) {
-      console.error("Error adding ad spend: ", e);
+      const adRef = push(ref(db, 'ads'));
+      await set(adRef, a);
+    } catch (e: any) {
+      alert("Ad log failed: " + e.message);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -159,25 +190,11 @@ const App: React.FC = () => {
     setIsAiLoading(false);
   };
 
-  const navItems = [
-    { id: 'dashboard', icon: <LayoutDashboard size={20} />, label: 'Home' },
-    { id: 'inventory', icon: <Package size={20} />, label: 'Stock' },
-    { id: 'sales', icon: <ShoppingCart size={20} />, label: 'Sales' },
-    { id: 'ads', icon: <Megaphone size={20} />, label: 'Ads' },
-    { id: 'ai', icon: <Sparkles size={20} />, label: 'AI' },
-  ];
-
-  if (isLoading) {
+  if (isLoading && products.length === 0) {
     return (
-      <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-50 gap-4">
-        <div className="relative">
-            <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
-            <TrendingUp className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-5 h-5 text-blue-400" />
-        </div>
-        <div className="text-center">
-            <p className="text-slate-800 font-black text-sm uppercase tracking-[0.2em]">BizPulse</p>
-            <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest mt-1">Syncing Live Data...</p>
-        </div>
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-white gap-4">
+        <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
+        <p className="text-slate-400 font-bold text-[10px] uppercase tracking-[0.3em]">Connecting to Cloud DB...</p>
       </div>
     );
   }
@@ -185,9 +202,9 @@ const App: React.FC = () => {
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 flex-col md:flex-row">
       {!isMobile && (
-        <aside className={`bg-slate-900 text-white transition-all duration-300 ${isSidebarOpen ? 'w-64' : 'w-20'} flex flex-col`}>
+        <aside className={`bg-slate-900 text-white transition-all duration-300 ${isSidebarOpen ? 'w-64' : 'w-20'} flex flex-col shadow-2xl`}>
           <div className="p-6 flex items-center gap-3 border-b border-slate-800">
-            <div className="bg-blue-600 p-2 rounded-lg"><TrendingUp size={20} /></div>
+            <div className="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-900/20"><TrendingUp size={20} /></div>
             {isSidebarOpen && <span className="font-bold text-xl tracking-tight">BizPulse</span>}
           </div>
           <nav className="flex-1 mt-6 px-4 space-y-2">
@@ -195,7 +212,7 @@ const App: React.FC = () => {
               <button 
                 key={item.id}
                 onClick={() => setView(item.id as View)}
-                className={`w-full flex items-center gap-4 px-3 py-3 rounded-lg transition-all ${view === item.id ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+                className={`w-full flex items-center gap-4 px-3 py-3 rounded-xl transition-all ${view === item.id ? 'bg-blue-600 text-white shadow-xl shadow-blue-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
               >
                 {item.icon}
                 {isSidebarOpen && <span className="font-medium">{item.label}</span>}
@@ -209,19 +226,38 @@ const App: React.FC = () => {
       )}
 
       <main className="flex-1 flex flex-col overflow-auto pb-20 md:pb-0">
-        <header className="h-16 bg-white border-b flex items-center justify-between px-6 md:px-8 sticky top-0 z-20">
+        <header className="h-16 bg-white/80 backdrop-blur-md border-b flex items-center justify-between px-6 md:px-8 sticky top-0 z-20">
           <div className="flex items-center gap-3">
-            {isMobile && <div className="bg-blue-600 p-1.5 rounded-lg text-white"><TrendingUp size={18} /></div>}
-            <h1 className="text-lg font-bold capitalize text-slate-800">{view}</h1>
+            {isMobile && <div className="bg-blue-600 p-1.5 rounded-lg text-white shadow-md"><TrendingUp size={18} /></div>}
+            <h1 className="text-lg font-black capitalize text-slate-800 tracking-tight">{view}</h1>
+            
+            <div className="flex items-center gap-2 ml-4">
+              {isSyncing ? (
+                <div className="flex items-center gap-1.5 text-blue-600 bg-blue-50 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider animate-pulse">
+                  <CloudLightning size={12} />
+                  <span>Syncing</span>
+                </div>
+              ) : syncError ? (
+                <div className="flex items-center gap-1.5 text-red-500 bg-red-50 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider">
+                  <CloudOff size={12} />
+                  <span>Offline</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider">
+                  <CloudCheck size={12} />
+                  <span>Cloud Live</span>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
             {lowStockProducts.length > 0 && (
-              <div className="flex items-center gap-1.5 text-amber-600 bg-amber-50 px-2.5 py-1.5 rounded-full text-xs font-bold">
+              <div className="hidden sm:flex items-center gap-1.5 text-amber-600 bg-amber-50 px-3 py-1.5 rounded-full text-[10px] font-black uppercase">
                 <AlertCircle size={14} />
-                <span>{lowStockProducts.length}</span>
+                <span>{lowStockProducts.length} items low</span>
               </div>
             )}
-            <div className="w-8 h-8 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center font-bold text-blue-600 text-xs shadow-inner">AD</div>
+            <div className="w-8 h-8 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center font-bold text-slate-400 text-xs">USER</div>
           </div>
         </header>
 
@@ -235,17 +271,17 @@ const App: React.FC = () => {
       </main>
 
       {isMobile && (
-        <nav className="fixed-bottom fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex items-center justify-around px-2 z-30 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+        <nav className="fixed-bottom fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-lg border-t border-gray-100 flex items-center justify-around px-2 z-30 shadow-[0_-10px_30px_rgba(0,0,0,0.05)]">
           {navItems.map(item => (
             <button 
               key={item.id}
               onClick={() => setView(item.id as View)}
-              className={`flex flex-col items-center justify-center flex-1 h-16 gap-1 transition-all ${view === item.id ? 'text-blue-600' : 'text-slate-400'}`}
+              className={`flex flex-col items-center justify-center flex-1 h-16 gap-1.5 transition-all ${view === item.id ? 'text-blue-600' : 'text-slate-400'}`}
             >
-              <div className={`${view === item.id ? 'bg-blue-50 p-2 rounded-xl' : 'p-2'}`}>
+              <div className={`p-2.5 rounded-2xl transition-all ${view === item.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30 -translate-y-1' : ''}`}>
                 {item.icon}
               </div>
-              <span className="text-[10px] font-bold uppercase tracking-wider">{item.label}</span>
+              <span className={`text-[9px] font-black uppercase tracking-widest ${view === item.id ? 'opacity-100' : 'opacity-60'}`}>{item.label}</span>
             </button>
           ))}
         </nav>
@@ -254,7 +290,7 @@ const App: React.FC = () => {
   );
 };
 
-// --- View Sub-Components (Remained similar but now react to the onSnapshot data) ---
+// --- Sub-Views ---
 
 const DashboardView = ({ metrics, sales, ads }: any) => {
   const chartData = useMemo(() => {
@@ -271,29 +307,36 @@ const DashboardView = ({ metrics, sales, ads }: any) => {
   }, [sales, ads]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <MetricCard label="Revenue" value={`$${metrics.totalRevenue.toFixed(0)}`} color="text-slate-900" icon={<DollarSign />} />
-        <MetricCard label="Ad Spend" value={`$${metrics.totalAdSpend.toFixed(0)}`} color="text-red-500" icon={<Megaphone />} />
-        <MetricCard label="Profit" value={`$${metrics.netProfit.toFixed(0)}`} color="text-emerald-600" icon={<BarChart3 />} />
+        <MetricCard label="Total Revenue" value={`$${metrics.totalRevenue.toLocaleString()}`} color="text-slate-900" icon={<DollarSign />} bg="bg-white" />
+        <MetricCard label="Marketing" value={`$${metrics.totalAdSpend.toLocaleString()}`} color="text-red-500" icon={<Megaphone />} bg="bg-white" />
+        <MetricCard label="Net Profit" value={`$${metrics.netProfit.toLocaleString()}`} color="text-emerald-600" icon={<BarChart3 />} bg="bg-white" />
       </div>
-      <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm">
-        <div className="flex justify-between items-center mb-6">
-          <h4 className="font-bold text-slate-800 flex items-center gap-2">Weekly Performance</h4>
-          <div className="flex items-center gap-4 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-blue-500"></div> Revenue</div>
-            <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-red-400"></div> Ads</div>
+      
+      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+        <div className="flex justify-between items-center mb-8">
+          <h4 className="font-black text-slate-800 text-sm uppercase tracking-widest flex items-center gap-2">
+            <TrendingUp size={16} className="text-blue-600"/>
+            Growth Trends
+          </h4>
+          <div className="flex gap-4">
+             <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div><span className="text-[10px] font-bold text-slate-400 uppercase">Sales</span></div>
+             <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-red-500"></div><span className="text-[10px] font-bold text-slate-400 uppercase">Ads</span></div>
           </div>
         </div>
-        <div className="h-64 w-full">
+        <div className="h-72 w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
-              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700 }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700 }} />
-              <Tooltip cursor={{ fill: '#f8fafc' }} />
-              <Bar dataKey="revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="ads" fill="#f87171" radius={[4, 4, 0, 0]} />
+            <BarChart data={chartData} margin={{ top: 0, right: 0, left: -25, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f8fafc" />
+              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 9, fontWeight: 800, fill: '#94a3b8' }} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9, fontWeight: 800, fill: '#94a3b8' }} />
+              <Tooltip 
+                cursor={{ fill: '#f8fafc' }} 
+                contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', fontSize: '12px' }}
+              />
+              <Bar dataKey="revenue" fill="#2563eb" radius={[6, 6, 0, 0]} barSize={20} />
+              <Bar dataKey="ads" fill="#ef4444" radius={[6, 6, 0, 0]} barSize={20} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -302,15 +345,15 @@ const DashboardView = ({ metrics, sales, ads }: any) => {
   );
 };
 
-const MetricCard = ({ label, value, color, icon }: any) => (
-  <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col hover:shadow-md transition-shadow">
-    <div className="flex justify-between items-start mb-1">
-      <p className="text-gray-500 text-[10px] font-bold uppercase tracking-widest">{label}</p>
-      <div className={`${color.replace('text-', 'bg-').replace('600', '100').replace('500', '100').replace('900', '100')} p-1.5 rounded-lg`}>
-        {React.cloneElement(icon, { size: 14, className: color })}
+const MetricCard = ({ label, value, color, icon, bg }: any) => (
+  <div className={`${bg} p-6 rounded-[2rem] border border-slate-100 shadow-sm flex flex-col hover:shadow-xl hover:translate-y-[-2px] transition-all cursor-default`}>
+    <div className="flex justify-between items-start mb-2">
+      <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.2em]">{label}</p>
+      <div className={`${color.replace('text-', 'bg-').replace('600', '50').replace('500', '50').replace('900', '50')} p-2 rounded-xl`}>
+        {React.cloneElement(icon, { size: 16, className: color })}
       </div>
     </div>
-    <h3 className={`text-2xl font-black ${color}`}>{value}</h3>
+    <h3 className={`text-3xl font-black ${color} tracking-tighter`}>{value}</h3>
   </div>
 );
 
@@ -331,41 +374,59 @@ const InventoryView = ({ products, onAdd, onDelete }: any) => {
   };
 
   return (
-    <div className="space-y-4">
-      <button onClick={() => setShowAdd(!showAdd)} className="w-full bg-blue-600 text-white p-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-blue-200 active:scale-95 transition-transform">
-        {showAdd ? <X size={20} /> : <Plus size={20} />} {showAdd ? 'Cancel' : 'Add Product'}
+    <div className="max-w-2xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+      <button onClick={() => setShowAdd(!showAdd)} className="w-full bg-slate-900 text-white p-5 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl hover:bg-black active:scale-[0.98] transition-all flex items-center justify-center gap-3">
+        {showAdd ? <X size={20} /> : <Plus size={20} />}
+        {showAdd ? 'Close Editor' : 'Register New Item'}
       </button>
+
       {showAdd && (
-        <form onSubmit={handleSubmit} className="bg-white p-4 rounded-xl shadow-lg space-y-3 border border-blue-50">
-          <input placeholder="Name" className="w-full p-3 bg-gray-50 rounded-lg outline-none focus:ring-2 ring-blue-500/20" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required />
-          <div className="grid grid-cols-2 gap-3">
-            <input placeholder="Cost" type="number" step="0.01" className="w-full p-3 bg-gray-50 rounded-lg outline-none" value={form.cost} onChange={e => setForm({...form, cost: e.target.value})} required />
-            <input placeholder="Price" type="number" step="0.01" className="w-full p-3 bg-gray-50 rounded-lg outline-none" value={form.price} onChange={e => setForm({...form, price: e.target.value})} required />
+        <form onSubmit={handleSubmit} className="bg-white p-8 rounded-[2rem] shadow-2xl border border-blue-50 space-y-6 animate-in zoom-in-95 duration-300">
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Label / Title</label>
+            <input className="w-full p-4 bg-slate-50 rounded-2xl outline-none focus:ring-4 ring-blue-500/10 transition-all font-medium border border-transparent focus:border-blue-100" placeholder="e.g. Premium Coffee Beans" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required />
           </div>
-          <input placeholder="Stock" type="number" className="w-full p-3 bg-gray-50 rounded-lg outline-none" value={form.stock} onChange={e => setForm({...form, stock: e.target.value})} required />
-          <button className="w-full bg-slate-900 text-white p-4 rounded-xl font-bold active:bg-black">Save Product</button>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Your Cost ($)</label>
+              <input type="number" step="0.01" className="w-full p-4 bg-slate-50 rounded-2xl outline-none border border-transparent focus:border-blue-100 font-medium" placeholder="0.00" value={form.cost} onChange={e => setForm({...form, cost: e.target.value})} required />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Sale Price ($)</label>
+              <input type="number" step="0.01" className="w-full p-4 bg-slate-50 rounded-2xl outline-none border border-transparent focus:border-blue-100 font-medium" placeholder="0.00" value={form.price} onChange={e => setForm({...form, price: e.target.value})} required />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Opening Stock</label>
+            <input type="number" className="w-full p-4 bg-slate-50 rounded-2xl outline-none border border-transparent focus:border-blue-100 font-medium" placeholder="How many on hand?" value={form.stock} onChange={e => setForm({...form, stock: e.target.value})} required />
+          </div>
+          <button className="w-full bg-blue-600 text-white p-5 rounded-2xl font-black uppercase tracking-widest hover:bg-blue-700 shadow-xl shadow-blue-600/20 transition-all">Add to Inventory</button>
         </form>
       )}
-      <div className="grid gap-3">
+
+      <div className="space-y-3">
         {products.map((p: any) => (
-          <div key={p.id} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex justify-between items-center animate-in fade-in zoom-in-95 duration-200">
-            <div>
-              <h4 className="font-bold">{p.name}</h4>
-              <p className="text-xs text-gray-500">${p.price} • {p.category}</p>
-            </div>
-            <div className="text-right flex items-center gap-4">
-              <div>
-                <p className={`text-xl font-black ${p.stock < 10 ? 'text-amber-500' : 'text-slate-900'}`}>{p.stock}</p>
-                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">In Stock</p>
+          <div key={p.id} className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm flex justify-between items-center group hover:border-blue-200 transition-all">
+            <div className="space-y-1">
+              <h4 className="font-black text-slate-800 text-lg tracking-tight">{p.name}</h4>
+              <div className="flex gap-4">
+                 <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">Price: <span className="text-emerald-600">${p.price}</span></p>
+                 <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">Cost: <span className="text-red-400">${p.cost}</span></p>
               </div>
-              <button onClick={() => onDelete(p.id)} className="text-red-400 p-2 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={18}/></button>
+            </div>
+            <div className="flex items-center gap-6">
+              <div className="text-right">
+                <p className={`text-2xl font-black tracking-tighter ${p.stock < 10 ? 'text-amber-500 animate-pulse' : 'text-slate-900'}`}>{p.stock}</p>
+                <p className="text-[9px] text-slate-300 font-black uppercase tracking-widest">Available</p>
+              </div>
+              <button onClick={() => onDelete(p.id)} className="text-slate-200 hover:text-red-500 p-3 hover:bg-red-50 rounded-2xl transition-all"><Trash2 size={18}/></button>
             </div>
           </div>
         ))}
         {products.length === 0 && (
-          <div className="py-12 text-center text-slate-400">
-            <Package size={40} className="mx-auto mb-3 opacity-20" />
-            <p className="text-xs font-bold uppercase">No products yet</p>
+          <div className="py-24 text-center text-slate-400 space-y-4">
+            <div className="w-20 h-20 bg-slate-100 rounded-[2rem] flex items-center justify-center mx-auto opacity-40"><Package size={40}/></div>
+            <p className="text-sm font-black uppercase tracking-widest">Inventory is empty</p>
           </div>
         )}
       </div>
@@ -382,6 +443,8 @@ const SalesView = ({ sales, onAdd, products }: any) => {
     const p = products.find((x: any) => x.id === form.productId);
     if (!p) return;
     const qty = Number(form.quantity);
+    if (qty > p.stock) return alert("Insufficient stock for this transaction!");
+    
     await onAdd({ 
       productId: p.id, 
       quantity: qty, 
@@ -392,33 +455,40 @@ const SalesView = ({ sales, onAdd, products }: any) => {
   };
 
   return (
-    <div className="space-y-4">
-      <button onClick={() => setShowAdd(!showAdd)} className="w-full bg-emerald-600 text-white p-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-100">
-        {showAdd ? <X size={20} /> : <Plus size={20} />} Record Sale
+    <div className="max-w-xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+      <button onClick={() => setShowAdd(!showAdd)} className="w-full bg-emerald-600 text-white p-5 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-emerald-600/20 hover:bg-emerald-700 active:scale-[0.98] transition-all flex items-center justify-center gap-3">
+        {showAdd ? <X size={20} /> : <ShoppingCart size={20} />}
+        Record Sale
       </button>
+
       {showAdd && (
-        <form onSubmit={handleSubmit} className="bg-white p-4 rounded-xl shadow-lg space-y-3 border border-emerald-50">
-          <select className="w-full p-3 bg-gray-50 rounded-lg" value={form.productId} onChange={e => setForm({...form, productId: e.target.value})} required>
-            <option value="">Select Item...</option>
-            {products.map((p: any) => <option key={p.id} value={p.id} disabled={p.stock <= 0}>{p.name} (${p.price}) {p.stock <= 0 ? '(Out of Stock)' : ''}</option>)}
-          </select>
-          <input placeholder="Quantity" type="number" min="1" className="w-full p-3 bg-gray-50 rounded-lg" value={form.quantity} onChange={e => setForm({...form, quantity: e.target.value})} required />
-          <button className="w-full bg-slate-900 text-white p-4 rounded-xl font-bold">Confirm Transaction</button>
+        <form onSubmit={handleSubmit} className="bg-white p-8 rounded-[2rem] shadow-2xl border border-emerald-50 space-y-6 animate-in zoom-in-95 duration-300">
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Item Selection</label>
+            <select className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-medium border border-transparent focus:border-emerald-100 transition-all" value={form.productId} onChange={e => setForm({...form, productId: e.target.value})} required>
+              <option value="">Choose item...</option>
+              {products.map((p: any) => <option key={p.id} value={p.id}>{p.name} - ${p.price}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Quantity Sold</label>
+            <input type="number" min="1" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-medium" placeholder="1" value={form.quantity} onChange={e => setForm({...form, quantity: e.target.value})} required />
+          </div>
+          <button className="w-full bg-slate-900 text-white p-5 rounded-2xl font-black uppercase tracking-widest hover:bg-black transition-all">Finalize Sale</button>
         </form>
       )}
-      <div className="space-y-2">
+
+      <div className="space-y-3">
         {sales.map((s: any) => (
-          <div key={s.id} className="bg-white p-4 rounded-xl flex justify-between items-center shadow-sm animate-in slide-in-from-right-2">
-            <div className="flex items-center gap-3">
-              <div className="bg-emerald-50 text-emerald-600 p-2 rounded-lg">
-                <ShoppingCart size={16} />
-              </div>
-              <div>
-                <p className="text-sm font-bold">{products.find((p: any) => p.id === s.productId)?.name || 'Unknown Item'}</p>
-                <p className="text-[10px] text-gray-400 uppercase font-bold">{s.date} • Qty {s.quantity}</p>
-              </div>
+          <div key={s.id} className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm flex justify-between items-center group border-l-[6px] border-l-emerald-500 hover:translate-x-1 transition-all">
+            <div className="space-y-1">
+              <p className="font-black text-slate-800 tracking-tight">{products.find((p: any) => p.id === s.productId)?.name || 'Retired Item'}</p>
+              <p className="text-[10px] text-slate-400 uppercase font-black tracking-[0.2em]">{s.date} • Unit Qty: {s.quantity}</p>
             </div>
-            <p className="text-emerald-600 font-black">${s.revenue.toFixed(2)}</p>
+            <div className="text-right">
+               <p className="text-2xl font-black text-emerald-600 tracking-tighter">+${s.revenue.toFixed(0)}</p>
+               <p className="text-[9px] text-slate-300 font-black uppercase tracking-widest">Revenue</p>
+            </div>
           </div>
         ))}
       </div>
@@ -442,29 +512,44 @@ const AdsView = ({ ads, onAdd }: any) => {
   };
 
   return (
-    <div className="space-y-4">
-      <button onClick={() => setShowAdd(!showAdd)} className="w-full bg-red-500 text-white p-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-red-100">
-        {showAdd ? <X size={20} /> : <Plus size={20} />} Log Ad Spend
+    <div className="max-w-xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+      <button onClick={() => setShowAdd(!showAdd)} className="w-full bg-red-500 text-white p-5 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-red-600/20 hover:bg-red-600 transition-all flex items-center justify-center gap-3">
+        {showAdd ? <X size={20} /> : <Megaphone size={20} />}
+        Log Marketing Cost
       </button>
+
       {showAdd && (
-        <form onSubmit={handleSubmit} className="bg-white p-4 rounded-xl shadow-lg space-y-3 border border-red-50">
-          <select className="w-full p-3 bg-gray-50 rounded-lg" value={form.platform} onChange={e => setForm({...form, platform: e.target.value})}>
-            <option>Instagram</option><option>Facebook</option><option>TikTok</option><option>Google</option>
-          </select>
-          <input placeholder="Amount Spent" type="number" step="0.01" className="w-full p-3 bg-gray-50 rounded-lg" value={form.amount} onChange={e => setForm({...form, amount: e.target.value})} required />
-          <input placeholder="People Reached" type="number" className="w-full p-3 bg-gray-50 rounded-lg" value={form.reach} onChange={e => setForm({...form, reach: e.target.value})} required />
-          <button className="w-full bg-slate-900 text-white p-4 rounded-xl font-bold">Save Ad Campaign</button>
+        <form onSubmit={handleSubmit} className="bg-white p-8 rounded-[2rem] shadow-2xl border border-red-50 space-y-6 animate-in zoom-in-95">
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Network / Platform</label>
+            <select className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-medium border border-transparent focus:border-red-100 transition-all" value={form.platform} onChange={e => setForm({...form, platform: e.target.value})}>
+              <option>Instagram</option><option>Facebook</option><option>TikTok</option><option>Google</option><option>Physical Ads</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Daily / Total Spend ($)</label>
+            <input type="number" step="0.01" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-medium" placeholder="0.00" value={form.amount} onChange={e => setForm({...form, amount: e.target.value})} required />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Reach / Impressions (Approx)</label>
+            <input type="number" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-medium" placeholder="Approx number" value={form.reach} onChange={e => setForm({...form, reach: e.target.value})} />
+          </div>
+          <button className="w-full bg-slate-900 text-white p-5 rounded-2xl font-black uppercase tracking-widest active:scale-95 transition-all">Submit Ad Log</button>
         </form>
       )}
-      <div className="grid gap-3">
+
+      <div className="grid grid-cols-1 gap-3">
         {ads.map((a: any) => (
-          <div key={a.id} className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-red-400">
-            <div className="flex justify-between items-start mb-2">
-              <span className="text-[10px] font-black uppercase text-gray-400">{a.platform}</span>
-              <span className="text-[10px] text-gray-300">{a.date}</span>
+          <div key={a.id} className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm flex justify-between items-center border-l-[6px] border-l-red-500 hover:shadow-lg transition-all">
+            <div className="space-y-1">
+              <span className="text-[10px] font-black uppercase text-red-500 tracking-[0.2em]">{a.platform}</span>
+              <p className="text-2xl font-black text-slate-900 tracking-tighter">${a.amount}</p>
+              <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">{a.date}</p>
             </div>
-            <p className="text-xl font-black text-red-500">${a.amount}</p>
-            <p className="text-xs text-gray-500 font-medium">{a.reach.toLocaleString()} people reached</p>
+            <div className="text-right">
+              <p className="text-lg font-black text-slate-400 tracking-tighter">{a.reach ? a.reach.toLocaleString() : '0'}</p>
+              <p className="text-[9px] text-slate-300 font-black uppercase tracking-widest">Total Reach</p>
+            </div>
           </div>
         ))}
       </div>
@@ -473,42 +558,55 @@ const AdsView = ({ ads, onAdd }: any) => {
 };
 
 const AIView = ({ insight, isLoading, onFetch }: any) => (
-  <div className="max-w-xl mx-auto py-8 px-2 space-y-8 text-center">
+  <div className="max-w-xl mx-auto py-12 px-4 space-y-10 text-center animate-in fade-in duration-700">
     {!insight && !isLoading ? (
       <>
-        <div className="w-24 h-24 bg-blue-600 text-white rounded-[2rem] flex items-center justify-center mx-auto shadow-2xl shadow-blue-200 rotate-6 active:rotate-0 transition-transform"><Sparkles size={48}/></div>
-        <h2 className="text-2xl font-black tracking-tight text-slate-900">AI Business Insights</h2>
-        <p className="text-slate-500 text-sm max-w-xs mx-auto">Get a professional analysis of your sales, stock, and ad performance.</p>
-        <button onClick={onFetch} className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest active:scale-[0.98] transition-all hover:bg-black">Analyze My Business</button>
+        <div className="w-32 h-32 bg-gradient-to-tr from-blue-600 to-indigo-600 text-white rounded-[3rem] flex items-center justify-center mx-auto shadow-2xl rotate-12 active:rotate-0 transition-transform shadow-blue-500/30">
+          <Sparkles size={64}/>
+        </div>
+        <div className="space-y-3">
+          <h2 className="text-4xl font-black tracking-tight text-slate-900">Expert Strategy</h2>
+          <p className="text-slate-500 text-base max-w-sm mx-auto font-medium">Get a personalized AI analysis of your costs, stock, and ad effectiveness powered by Gemini 3.</p>
+        </div>
+        <button onClick={onFetch} className="w-full bg-slate-900 text-white py-6 rounded-3xl font-black text-xs uppercase tracking-[0.3em] active:scale-[0.98] transition-all hover:shadow-2xl hover:bg-black">Analyze Performance</button>
       </>
     ) : isLoading ? (
-      <div className="flex flex-col items-center gap-6 py-12">
+      <div className="flex flex-col items-center gap-8 py-20">
         <div className="relative">
-            <Loader2 className="w-16 h-16 text-blue-600 animate-spin opacity-20" />
-            <Sparkles className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 text-blue-500 animate-pulse" />
+            <Loader2 className="w-20 h-20 text-blue-600 animate-spin" />
+            <Sparkles size={32} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-blue-400 animate-pulse" />
         </div>
-        <p className="text-xs font-black uppercase tracking-[0.2em] text-blue-600">Gemini is Thinking...</p>
+        <div className="space-y-2">
+          <p className="text-sm font-black uppercase tracking-[0.4em] text-blue-600 animate-pulse">Running Logic Engines</p>
+          <p className="text-[10px] text-slate-300 font-bold uppercase tracking-[0.2em]">Verifying Profit Margins & ROI...</p>
+        </div>
       </div>
     ) : (
-      <div className="bg-white rounded-3xl border border-gray-100 shadow-2xl overflow-hidden text-left animate-in slide-in-from-bottom-8 duration-500">
-        <div className="bg-slate-900 p-5 text-white flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <div className="bg-blue-500/20 p-2 rounded-lg">
-                <Sparkles size={18} className="text-blue-400"/>
-            </div>
-            <h3 className="font-black text-sm uppercase tracking-wide">Business Report</h3>
+      <div className="bg-white rounded-[3rem] border border-slate-100 shadow-[0_20px_50px_rgba(0,0,0,0.08)] overflow-hidden text-left animate-in slide-in-from-bottom-8 duration-700">
+        <div className="bg-slate-900 p-8 text-white flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <div className="p-2 bg-blue-600 rounded-xl"><Sparkles size={20} className="text-white"/></div>
+            <h3 className="font-black text-sm uppercase tracking-widest">Growth Blueprint</h3>
           </div>
-          <button onClick={onFetch} className="text-[10px] font-black uppercase bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition-colors">Re-run</button>
+          <button onClick={onFetch} className="text-[10px] font-black uppercase bg-white/10 hover:bg-white/20 px-5 py-2.5 rounded-xl transition-all border border-white/5">Regenerate</button>
         </div>
-        <div className="p-6 md:p-8 whitespace-pre-wrap text-slate-700 text-sm leading-relaxed prose prose-slate max-w-none">
-            {insight}
+        <div className="p-10 whitespace-pre-wrap text-slate-700 text-sm leading-relaxed max-h-[60vh] overflow-auto custom-scrollbar font-medium">
+          {insight}
         </div>
-        <div className="p-4 bg-gray-50 border-t border-gray-100 text-center">
-            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Powered by Google Gemini</p>
+        <div className="p-6 bg-slate-50 border-t border-slate-100 text-center">
+            <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.3em]">Insights calibrated for small-medium enterprise</p>
         </div>
       </div>
     )}
   </div>
 );
+
+const navItems = [
+  { id: 'dashboard', icon: <LayoutDashboard size={20} />, label: 'Stats' },
+  { id: 'inventory', icon: <Package size={20} />, label: 'Stock' },
+  { id: 'sales', icon: <ShoppingCart size={20} />, label: 'Sales' },
+  { id: 'ads', icon: <Megaphone size={20} />, label: 'Ads' },
+  { id: 'ai', icon: <Sparkles size={20} />, label: 'Coach' },
+];
 
 export default App;
